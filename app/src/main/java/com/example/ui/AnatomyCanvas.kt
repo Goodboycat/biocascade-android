@@ -2,6 +2,8 @@ package com.example.ui
 
 import android.opengl.GLSurfaceView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -27,9 +29,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.zIndex
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -268,11 +275,19 @@ fun InteractiveAnatomyStage(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Holographic HUD callout leader lines & organ anchor markers
+        // Holographic HUD callout leader lines & organ anchor markers (draw selected last so it sits on top)
+        val orderedRegions = remember(selectedRegion) {
+            BodyRegion.entries.sortedBy { if (it == selectedRegion) 1 else 0 }
+        }
+        val compactCardWidthDp = 156.dp
+        val selectedCardWidthDp = minOf(272.dp, (constraints.maxWidth.dp - 20.dp).coerceAtLeast(210.dp))
+        val compactWidthPx = with(density) { compactCardWidthDp.toPx() }
+        val selectedWidthPx = with(density) { selectedCardWidthDp.toPx() }
+        val padPx = with(density) { 12.dp.toPx() }
+
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val cardWidthPx = with(density) { 166.dp.toPx() }
-            val padPx = with(density) { 12.dp.toPx() }
-            projectedAnchors.forEach { (region, anchor) ->
+            orderedRegions.forEach { region ->
+                val anchor = projectedAnchors[region] ?: return@forEach
                 val telemetry = state.regionTelemetry[region] ?: return@forEach
                 val sevColor = severityColor(telemetry.severity, skin)
                 val isSelected = selectedRegion == region
@@ -280,32 +295,35 @@ fun InteractiveAnatomyStage(
 
                 if (isSelected || showAllContainers) {
                     drawCircle(
-                        color = sevColor.copy(alpha = if (isSelected) 0.45f else 0.25f),
-                        radius = if (isSelected) 16f else 10f,
+                        color = sevColor.copy(alpha = if (isSelected) 0.55f else 0.25f),
+                        radius = if (isSelected) 18f else 10f,
                         center = anchor.screenOffset,
                     )
                     drawCircle(
                         color = if (isSelected) Color.White else sevColor,
-                        radius = if (isSelected) 5.5f else 3.5f,
+                        radius = if (isSelected) 6f else 3.5f,
                         center = anchor.screenOffset,
                     )
                 }
 
                 if (showContainer) {
+                    val activeW = if (isSelected) selectedWidthPx else compactWidthPx
+                    val estH = with(density) { if (isSelected) 220.dp.toPx() else 148.dp.toPx() }
                     val pos = computeContainerPosition(
                         anchor = anchor.screenOffset,
                         stageW = stageW,
                         stageH = stageH,
-                        cardWidthPx = cardWidthPx,
+                        cardWidthPx = activeW,
+                        cardEstHeightPx = estH,
                         padPx = padPx,
                     )
-                    val targetEdgeX = if (pos.placedRight) pos.x else pos.x + cardWidthPx
-                    val targetEdgeY = pos.y + with(density) { 28.dp.toPx() }
+                    val targetEdgeX = if (pos.placedRight) pos.x else pos.x + activeW
+                    val targetEdgeY = pos.y + with(density) { if (isSelected) 34.dp.toPx() else 26.dp.toPx() }
                     drawLine(
-                        color = sevColor.copy(alpha = if (isSelected) 0.85f else 0.45f),
+                        color = sevColor.copy(alpha = if (isSelected) 0.95f else 0.42f),
                         start = anchor.screenOffset,
                         end = Offset(targetEdgeX, targetEdgeY),
-                        strokeWidth = if (isSelected) 2.5f else 1.5f,
+                        strokeWidth = if (isSelected) 3.2f else 1.4f,
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f),
                     )
                 }
@@ -313,14 +331,15 @@ fun InteractiveAnatomyStage(
         }
 
         // Zoom-adaptive floating symptom & numerical info containers anchored to 3D projections
-        val cardWidthPx = with(density) { 166.dp.toPx() }
-        val padPx = with(density) { 12.dp.toPx() }
-        BodyRegion.entries.forEach { region ->
+        orderedRegions.forEach { region ->
             val telemetry = state.regionTelemetry[region]
             val anchor = projectedAnchors[region]
-            val visible = telemetry != null && anchor != null && (showAllContainers || selectedRegion == region)
+            val isSelected = selectedRegion == region
+            val visible = telemetry != null && anchor != null && (showAllContainers || isSelected)
+            val activeW = if (isSelected) selectedWidthPx else compactWidthPx
+            val estH = with(density) { if (isSelected) 220.dp.toPx() else 148.dp.toPx() }
             val pos = if (anchor != null) {
-                computeContainerPosition(anchor.screenOffset, stageW, stageH, cardWidthPx, padPx)
+                computeContainerPosition(anchor.screenOffset, stageW, stageH, activeW, estH, padPx)
             } else {
                 ContainerPos(0f, 0f, true)
             }
@@ -329,14 +348,17 @@ fun InteractiveAnatomyStage(
                 visible = visible,
                 enter = fadeIn() + scaleIn(initialScale = 0.88f),
                 exit = fadeOut() + scaleOut(targetScale = 0.88f),
-                modifier = Modifier.offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) },
+                modifier = Modifier
+                    .zIndex(if (isSelected) 100f else 1f)
+                    .offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) },
             ) {
                 if (telemetry != null) {
                     RegionFloatingContainer(
                         telemetry = telemetry,
-                        isSelected = selectedRegion == region,
+                        isSelected = isSelected,
+                        cardWidthDp = if (isSelected) selectedCardWidthDp else compactCardWidthDp,
                         skin = skin,
-                        onTap = { onSelectRegion(if (selectedRegion == region) null else region) },
+                        onTap = { onSelectRegion(if (isSelected) null else region) },
                     )
                 }
             }
@@ -374,6 +396,7 @@ private fun computeContainerPosition(
     stageW: Float,
     stageH: Float,
     cardWidthPx: Float,
+    cardEstHeightPx: Float,
     padPx: Float,
 ): ContainerPos {
     val placeRight = anchor.x <= stageW * 0.52f
@@ -383,7 +406,7 @@ private fun computeContainerPosition(
         anchor.x - cardWidthPx - padPx * 1.4f
     }
     val x = rawX.coerceIn(10f, (stageW - cardWidthPx - 10f).coerceAtLeast(10f))
-    val y = (anchor.y - padPx * 2.5f).coerceIn(14f, (stageH - 210f).coerceAtLeast(24f))
+    val y = (anchor.y - padPx * 2.5f).coerceIn(12f, (stageH - cardEstHeightPx - 12f).coerceAtLeast(16f))
     return ContainerPos(x, y, placeRight)
 }
 
@@ -397,65 +420,107 @@ private fun severityColor(severity: SeverityLevel, skin: BioSkinPalette): Color 
 private fun RegionFloatingContainer(
     telemetry: RegionTelemetry,
     isSelected: Boolean,
+    cardWidthDp: androidx.compose.ui.unit.Dp,
     skin: BioSkinPalette,
     onTap: () -> Unit,
 ) {
     val sevColor = severityColor(telemetry.severity, skin)
+    val animatedWidth by animateDpAsState(
+        targetValue = cardWidthDp,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 420f),
+        label = "container_width_${telemetry.region.name}",
+    )
     Surface(
-        color = skin.surface.copy(alpha = 0.88f),
-        shape = RoundedCornerShape(12.dp),
+        color = if (isSelected) skin.surfaceElevated.copy(alpha = 0.98f) else skin.surface.copy(alpha = 0.84f),
+        shape = RoundedCornerShape(if (isSelected) 16.dp else 12.dp),
+        shadowElevation = if (isSelected) 18.dp else 2.dp,
+        tonalElevation = if (isSelected) 8.dp else 0.dp,
         modifier = Modifier
-            .width(166.dp)
+            .width(animatedWidth)
             .border(
-                width = if (isSelected) 1.5.dp else 1.dp,
-                color = if (isSelected) sevColor else sevColor.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(12.dp),
+                width = if (isSelected) 2.dp else 1.dp,
+                color = if (isSelected) sevColor else sevColor.copy(alpha = 0.50f),
+                shape = RoundedCornerShape(if (isSelected) 16.dp else 12.dp),
             )
             .clickable(onClick = onTap)
             .testTag("container_${telemetry.region.name.lowercase()}"),
     ) {
-        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Column(
+            modifier = Modifier.padding(if (isSelected) 13.dp else 8.dp),
+            verticalArrangement = Arrangement.spacedBy(if (isSelected) 5.dp else 3.dp),
+        ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    text = telemetry.region.displayName,
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = skin.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(sevColor),
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = telemetry.region.displayName,
+                        style = if (isSelected) {
+                            MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        } else {
+                            MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                        },
+                        color = skin.textPrimary,
+                        maxLines = if (isSelected) 2 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (isSelected) {
+                        Text(
+                            text = telemetry.region.systemTag.uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = skin.primaryAccent,
+                        )
+                    }
+                }
+                if (isSelected) {
+                    IconButton(
+                        onClick = onTap,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Collapse ${telemetry.region.displayName}",
+                            tint = skin.textSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(sevColor),
+                    )
+                }
             }
             Text(
                 text = "${telemetry.primaryNumber} • ${telemetry.secondaryNumber}",
                 style = TelemetryNumericStyle.copy(
-                    fontSize = MaterialTheme.typography.labelMedium.fontSize,
+                    fontSize = if (isSelected) {
+                        MaterialTheme.typography.titleSmall.fontSize
+                    } else {
+                        MaterialTheme.typography.labelMedium.fontSize
+                    },
                     fontWeight = FontWeight.Bold,
                 ),
                 color = sevColor,
             )
             Text(
                 text = "${telemetry.rateText} | ${telemetry.etaText}",
-                style = MaterialTheme.typography.labelSmall,
+                style = if (isSelected) MaterialTheme.typography.bodySmall else MaterialTheme.typography.labelSmall,
                 color = skin.textSecondary,
-                maxLines = 1,
+                maxLines = if (isSelected) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            telemetry.symptoms.take(2).forEach { sym ->
+            val displayedSymptoms = if (isSelected) telemetry.symptoms else telemetry.symptoms.take(2)
+            displayedSymptoms.forEach { sym ->
                 Text(
                     text = "• $sym",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = skin.textPrimary.copy(alpha = 0.9f),
-                    maxLines = 2,
+                    style = if (isSelected) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
+                    color = skin.textPrimary.copy(alpha = if (isSelected) 0.98f else 0.88f),
+                    maxLines = if (isSelected) 4 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

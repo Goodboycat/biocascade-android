@@ -19,6 +19,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -26,6 +29,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Pause
@@ -33,17 +39,20 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Timeline
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -61,8 +70,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.physiology.BiochemicalIngredient
 import com.example.physiology.BodyRegion
 import com.example.physiology.CausalNode
+import com.example.physiology.IngredientCatalog
+import com.example.physiology.IngredientCategory
 import com.example.physiology.ManipulableParam
 import com.example.physiology.PhysiologyEngine
 import com.example.physiology.PhysiologyState
@@ -76,7 +90,7 @@ import com.example.viewmodel.PhysiologyViewModel
 fun BodyLabScreen(
     state: PhysiologyState,
     selectedRegion: BodyRegion?,
-    activeLever: ManipulableParam,
+    activeIngredient: BiochemicalIngredient,
     viewModel: PhysiologyViewModel,
     isSaving: Boolean,
     modifier: Modifier = Modifier,
@@ -154,13 +168,13 @@ fun BodyLabScreen(
                 )
 
                 if (dockMode == 1) {
-                    // Substance/Parameter Manipulation + Exact Mathematical Cause-Effect Chain
+                    // Searchable 114-Ingredient Dropdown + Live Physiological Manipulation
                     LeverControlPanel(
                         state = state,
-                        activeLever = activeLever,
-                        onSelectLever = viewModel::selectLever,
-                        onChangeValue = { v -> viewModel.updateParamValue(activeLever, v) },
-                        onStep = { dir -> viewModel.stepParam(activeLever, dir) },
+                        activeIngredient = activeIngredient,
+                        onSelectIngredient = viewModel::selectIngredient,
+                        onChangeValue = viewModel::updateActiveIngredientValue,
+                        onStep = viewModel::stepActiveIngredient,
                         skin = skin,
                     )
 
@@ -317,60 +331,91 @@ private fun LiveVitalStripAndPlayback(
 @Composable
 private fun LeverControlPanel(
     state: PhysiologyState,
-    activeLever: ManipulableParam,
-    onSelectLever: (ManipulableParam) -> Unit,
+    activeIngredient: BiochemicalIngredient,
+    onSelectIngredient: (BiochemicalIngredient) -> Unit,
     onChangeValue: (Double) -> Unit,
     onStep: (Int) -> Unit,
     skin: BioSkinPalette,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(end = 6.dp),
+    var dropdownOpen by remember { mutableStateOf(false) }
+
+    val currentVal = PhysiologyEngine.getIngredientValue(state, activeIngredient)
+    val metricKey = when (activeIngredient.coreParam) {
+        ManipulableParam.GLUCOSE -> "glucose"
+        ManipulableParam.INSULIN -> "insulin"
+        ManipulableParam.SODIUM -> "sodium"
+        ManipulableParam.POTASSIUM -> "potassium"
+        ManipulableParam.HYDRATION -> "map"
+        ManipulableParam.SYMPATHETIC -> "hr"
+        ManipulableParam.OXYGEN_INFLOW -> "spo2"
+        null -> null
+    }
+    val readout = metricKey?.let { state.metrics[it] }
+    val subtitleTxt = if (readout != null) {
+        val rateTxt = "dX/dt ${PhysiologyEngine.formatSigned(readout.ratePerMin)}/min"
+        val etaTxt = readout.etaToCriticalSec?.let { " • Crit in ${PhysiologyEngine.formatDuration(it)}" } ?: " • Stable"
+        "$rateTxt$etaTxt"
+    } else {
+        "Norm ${activeIngredient.normalRange} • ${activeIngredient.targetRegion.displayName}"
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Single Searchable Dropdown Trigger (replaces side-by-side ingredient buttons)
+        Surface(
+            color = skin.surfaceElevated,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .minimumInteractiveComponentSize()
+                .border(1.dp, skin.primaryAccent.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                .clickable { dropdownOpen = true }
+                .testTag("ingredient_dropdown_button"),
         ) {
-            items(ManipulableParam.entries) { param ->
-                val selected = param == activeLever
-                FilterChip(
-                    selected = selected,
-                    onClick = { onSelectLever(param) },
-                    label = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Surface(
+                        color = categoryBadgeColor(activeIngredient.category, skin).copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
                         Text(
-                            text = param.shortName,
-                            style = MaterialTheme.typography.labelMedium,
+                            text = activeIngredient.category.badge,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = categoryBadgeColor(activeIngredient.category, skin),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                         )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = skin.primaryAccent,
-                        selectedLabelColor = skin.onAccent,
-                        containerColor = skin.surfaceElevated,
-                        labelColor = skin.textSecondary,
-                    ),
-                    modifier = Modifier.height(30.dp).testTag("lever_chip_${param.name.lowercase()}"),
-                )
+                    }
+                    Text(
+                        text = activeIngredient.name,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = skin.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "${IngredientCatalog.all.size} items",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = skin.textSecondary,
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.ArrowDropDown,
+                        contentDescription = "Open ingredients list",
+                        tint = skin.primaryAccent,
+                    )
+                }
             }
         }
-
-        val currentVal = when (activeLever) {
-            ManipulableParam.GLUCOSE -> state.glucoseMgDl
-            ManipulableParam.INSULIN -> state.insulinUiMl
-            ManipulableParam.SODIUM -> state.sodiumMeqL
-            ManipulableParam.POTASSIUM -> state.potassiumMeqL
-            ManipulableParam.HYDRATION -> state.hydrationPct
-            ManipulableParam.SYMPATHETIC -> state.sympatheticDrivePct
-            ManipulableParam.OXYGEN_INFLOW -> state.fiO2Pct
-        }
-        val metricKey = when (activeLever) {
-            ManipulableParam.GLUCOSE -> "glucose"
-            ManipulableParam.INSULIN -> "insulin"
-            ManipulableParam.SODIUM -> "sodium"
-            ManipulableParam.POTASSIUM -> "potassium"
-            ManipulableParam.HYDRATION -> "map"
-            ManipulableParam.SYMPATHETIC -> "hr"
-            ManipulableParam.OXYGEN_INFLOW -> "spo2"
-        }
-        val readout = state.metrics[metricKey]
-        val rateTxt = readout?.let { "dX/dt ${PhysiologyEngine.formatSigned(it.ratePerMin)}/min" } ?: ""
-        val etaTxt = readout?.etaToCriticalSec?.let { " • Crit in ${PhysiologyEngine.formatDuration(it)}" } ?: " • Stable"
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -379,24 +424,28 @@ private fun LeverControlPanel(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "${activeLever.displayName}: ${PhysiologyEngine.formatCompact(currentVal)} ${activeLever.unit}",
+                    text = "${activeIngredient.name}: ${PhysiologyEngine.formatCompact(currentVal)} ${activeIngredient.unit}",
                     style = TelemetryNumericStyle.copy(
                         fontSize = MaterialTheme.typography.titleSmall.fontSize,
                         fontWeight = FontWeight.Bold,
                     ),
                     color = skin.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "$rateTxt$etaTxt",
+                    text = subtitleTxt,
                     style = MaterialTheme.typography.labelSmall,
                     color = skin.primaryAccent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
                     onClick = { onStep(-1) },
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .background(skin.surfaceElevated)
                         .testTag("lever_decrease_button"),
@@ -407,7 +456,7 @@ private fun LeverControlPanel(
                 IconButton(
                     onClick = { onStep(+1) },
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .background(skin.primaryAccent)
                         .testTag("lever_increase_button"),
@@ -418,9 +467,9 @@ private fun LeverControlPanel(
         }
 
         Slider(
-            value = currentVal.toFloat().coerceIn(activeLever.minVal.toFloat(), activeLever.maxVal.toFloat()),
+            value = currentVal.toFloat().coerceIn(activeIngredient.minVal.toFloat(), activeIngredient.maxVal.toFloat()),
             onValueChange = { onChangeValue(it.toDouble()) },
-            valueRange = activeLever.minVal.toFloat()..activeLever.maxVal.toFloat(),
+            valueRange = activeIngredient.minVal.toFloat()..activeIngredient.maxVal.toFloat(),
             colors = SliderDefaults.colors(
                 thumbColor = skin.primaryAccent,
                 activeTrackColor = skin.primaryAccent,
@@ -429,6 +478,240 @@ private fun LeverControlPanel(
             modifier = Modifier.fillMaxWidth().height(26.dp).testTag("lever_slider"),
         )
     }
+
+    if (dropdownOpen) {
+        IngredientSearchDropdownDialog(
+            activeIngredient = activeIngredient,
+            state = state,
+            skin = skin,
+            onDismiss = { dropdownOpen = false },
+            onSelect = { chosen ->
+                onSelectIngredient(chosen)
+                dropdownOpen = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun IngredientSearchDropdownDialog(
+    activeIngredient: BiochemicalIngredient,
+    state: PhysiologyState,
+    skin: BioSkinPalette,
+    onDismiss: () -> Unit,
+    onSelect: (BiochemicalIngredient) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(query) { IngredientCatalog.search(query) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            color = skin.surface,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 20.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 28.dp)
+                .heightIn(max = 560.dp)
+                .imePadding()
+                .border(1.5.dp, skin.primaryAccent.copy(alpha = 0.55f), RoundedCornerShape(20.dp)),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column {
+                        Text(
+                            text = "Physiological Ingredients (${IngredientCatalog.all.size})",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = skin.textPrimary,
+                        )
+                        Text(
+                            text = "Metals, vitamins, electrolytes, hormones & metabolites",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = skin.textSecondary,
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close ingredients list", tint = skin.textSecondary)
+                    }
+                }
+
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Filled.Search, contentDescription = null, tint = skin.primaryAccent)
+                    },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear search", tint = skin.textSecondary)
+                            }
+                        }
+                    },
+                    placeholder = {
+                        Text(
+                            text = "Search iron, vitamin D3, zinc, cortisol, K+...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = skin.textSecondary,
+                        )
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = skin.primaryAccent,
+                        unfocusedBorderColor = skin.borderSubtle,
+                        focusedTextColor = skin.textPrimary,
+                        unfocusedTextColor = skin.textPrimary,
+                        cursorColor = skin.primaryAccent,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("ingredient_search_input"),
+                )
+
+                Text(
+                    text = "Showing ${filtered.size} of ${IngredientCatalog.all.size} ingredients",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = skin.textSecondary,
+                )
+
+                if (filtered.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "No matching ingredient. Try a metal, vitamin, or organ name.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = skin.textSecondary,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(filtered, key = { it.id }) { item ->
+                            val isSelected = item.id == activeIngredient.id
+                            val itemVal = PhysiologyEngine.getIngredientValue(state, item)
+                            val badgeColor = categoryBadgeColor(item.category, skin)
+                            Surface(
+                                color = if (isSelected) skin.primaryAccent.copy(alpha = 0.16f) else skin.surfaceElevated,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(
+                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                        color = if (isSelected) skin.primaryAccent else skin.borderSubtle,
+                                        shape = RoundedCornerShape(12.dp),
+                                    )
+                                    .clickable { onSelect(item) }
+                                    .testTag("ingredient_item_${item.id}"),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            Surface(
+                                                color = badgeColor.copy(alpha = 0.16f),
+                                                shape = RoundedCornerShape(5.dp),
+                                            ) {
+                                                Text(
+                                                    text = item.category.badge,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                    color = badgeColor,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                                )
+                                            }
+                                            Text(
+                                                text = item.name,
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                color = skin.textPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        Text(
+                                            text = "${item.targetRegion.displayName} • Norm ${item.normalRange}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = skin.textSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = item.mechanism,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = skin.textSecondary.copy(alpha = 0.88f),
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = "${PhysiologyEngine.formatCompact(itemVal)} ${item.unit}",
+                                            style = TelemetryNumericStyle.copy(
+                                                fontSize = MaterialTheme.typography.labelMedium.fontSize,
+                                                fontWeight = FontWeight.Bold,
+                                            ),
+                                            color = if (isSelected) skin.primaryAccent else skin.textPrimary,
+                                        )
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Check,
+                                                contentDescription = "Selected",
+                                                tint = skin.primaryAccent,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun categoryBadgeColor(category: IngredientCategory, skin: BioSkinPalette): Color = when (category) {
+    IngredientCategory.ELECTROLYTE_GAS -> skin.primaryAccent
+    IngredientCategory.METAL -> skin.cautionColor
+    IngredientCategory.VITAMIN -> skin.normalColor
+    IngredientCategory.AMINO_NEURO -> skin.secondaryAccent
+    IngredientCategory.HORMONE_PEPTIDE -> skin.arterialRed
+    IngredientCategory.METABOLITE_CLINICAL -> skin.primaryAccent
 }
 
 @Composable

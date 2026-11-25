@@ -77,7 +77,7 @@ fun MainDashboard(
 
     val physiologyState by viewModel.physiologyState.collectAsStateWithLifecycle()
     val selectedRegion by viewModel.selectedRegion.collectAsStateWithLifecycle()
-    val activeLever by viewModel.activeLever.collectAsStateWithLifecycle()
+    val activeIngredient by viewModel.activeIngredient.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val medicalSearchState by viewModel.medicalSearchState.collectAsStateWithLifecycle()
     val profilesState by viewModel.profilesState.collectAsStateWithLifecycle()
@@ -131,7 +131,7 @@ fun MainDashboard(
                     BodyLabScreen(
                         state = physiologyState,
                         selectedRegion = selectedRegion,
-                        activeLever = activeLever,
+                        activeIngredient = activeIngredient,
                         viewModel = viewModel,
                         isSaving = isSaving,
                     )

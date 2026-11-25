@@ -9,8 +9,10 @@ import com.example.data.EncryptedPdfExporter
 import com.example.data.PreferencesRepository
 import com.example.medicalweb.MedicalSearchUiState
 import com.example.medicalweb.MedicalWebRepository
+import com.example.physiology.BiochemicalIngredient
 import com.example.physiology.BodyRegion
 import com.example.physiology.HumanBaselineProfile
+import com.example.physiology.IngredientCatalog
 import com.example.physiology.ManipulableParam
 import com.example.physiology.PhysiologyEngine
 import com.example.physiology.PhysiologyState
@@ -55,6 +57,9 @@ class PhysiologyViewModel(
 
     private val _activeLever = MutableStateFlow(ManipulableParam.GLUCOSE)
     val activeLever: StateFlow<ManipulableParam> = _activeLever.asStateFlow()
+
+    private val _activeIngredient = MutableStateFlow(IngredientCatalog.defaultIngredient)
+    val activeIngredient: StateFlow<BiochemicalIngredient> = _activeIngredient.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -173,7 +178,14 @@ class PhysiologyViewModel(
 
     fun selectLever(param: ManipulableParam) {
         _activeLever.value = param
+        _activeIngredient.value = IngredientCatalog.forCoreParam(param)
         _selectedRegion.value = param.primaryRegion
+    }
+
+    fun selectIngredient(ingredient: BiochemicalIngredient) {
+        _activeIngredient.value = ingredient
+        ingredient.coreParam?.let { _activeLever.value = it }
+        _selectedRegion.value = ingredient.targetRegion
     }
 
     fun updateParamValue(param: ManipulableParam, newValue: Double) {
@@ -183,9 +195,23 @@ class PhysiologyViewModel(
         }
     }
 
+    fun updateActiveIngredientValue(newValue: Double) {
+        val ing = _activeIngredient.value
+        ing.coreParam?.let { _activeLever.value = it }
+        _physiologyState.update { current ->
+            PhysiologyEngine.applyIngredientValue(current, ing, newValue)
+        }
+    }
+
     fun stepParam(param: ManipulableParam, deltaSign: Int) {
         val currentVal = getParamValue(_physiologyState.value, param)
         updateParamValue(param, currentVal + deltaSign * param.step)
+    }
+
+    fun stepActiveIngredient(deltaSign: Int) {
+        val ing = _activeIngredient.value
+        val currentVal = PhysiologyEngine.getIngredientValue(_physiologyState.value, ing)
+        updateActiveIngredientValue(currentVal + deltaSign * ing.step)
     }
 
     fun getParamValue(state: PhysiologyState, param: ManipulableParam): Double = when (param) {

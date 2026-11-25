@@ -2,6 +2,8 @@ package com.example
 
 import com.example.physiology.BiologicalSex
 import com.example.physiology.HumanBaselineProfile
+import com.example.physiology.IngredientCatalog
+import com.example.physiology.IngredientCategory
 import com.example.physiology.ManipulableParam
 import com.example.physiology.PhysiologyEngine
 import com.example.physiology.SeverityLevel
@@ -57,5 +59,29 @@ class PhysiologyEngineTest {
 
         assertEquals(SeverityLevel.CRITICAL, state.metrics.getValue("potassium").severity)
         assertTrue("Heart region should report critical severity", state.regionTelemetry.values.any { it.severity == SeverityLevel.CRITICAL })
+    }
+
+    @Test
+    fun ingredientCatalog_containsOverHundredUniqueMetalsVitaminsAndSearchMatches() {
+        val all = IngredientCatalog.all
+        assertTrue("Catalog must contain at least 100 individual ingredients", all.size >= 100)
+        assertEquals("All ingredient IDs must be unique", all.size, all.map { it.id }.toSet().size)
+        assertTrue(all.any { it.category == IngredientCategory.METAL && it.id == "iron" })
+        assertTrue(all.any { it.category == IngredientCategory.VITAMIN && it.id == "vitamin_d3" })
+        assertTrue(IngredientCatalog.search("zinc").any { it.id == "zinc" })
+        assertTrue(IngredientCatalog.search("vitamin").size >= 10)
+    }
+
+    @Test
+    fun nonCoreIngredient_caffeineAndLactate_coupleToPhysiologyAndCausalChain() {
+        var state = PhysiologyEngine.initialState(HumanBaselineProfile())
+        val caffeine = IngredientCatalog.byId("caffeine")
+        state = PhysiologyEngine.applyIngredientValue(state, caffeine, 36.0)
+        repeat(20) {
+            state = PhysiologyEngine.stepSimulation(state, dtSimSeconds = 12.0)
+        }
+        assertTrue("High caffeine should elevate heart rate (${state.heartRateBpm})", state.heartRateBpm > 71.0)
+        assertTrue("High caffeine should raise MAP (${state.mapMmHg})", state.mapMmHg > 93.0)
+        assertTrue("Causal chain should include active ingredient cascade", state.causalChain.any { it.id == "node_ing_caffeine" })
     }
 }

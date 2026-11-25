@@ -101,6 +101,44 @@ object PhysiologyEngine {
         return stepSimulation(updated, dtSimSeconds = 0.05, forceSample = true)
     }
 
+    fun getIngredientValue(state: PhysiologyState, ingredient: BiochemicalIngredient): Double {
+        val core = ingredient.coreParam
+        if (core != null) {
+            return when (core) {
+                ManipulableParam.GLUCOSE -> state.glucoseMgDl
+                ManipulableParam.INSULIN -> state.insulinUiMl
+                ManipulableParam.SODIUM -> state.sodiumMeqL
+                ManipulableParam.POTASSIUM -> state.potassiumMeqL
+                ManipulableParam.HYDRATION -> state.hydrationPct
+                ManipulableParam.SYMPATHETIC -> state.sympatheticDrivePct
+                ManipulableParam.OXYGEN_INFLOW -> state.fiO2Pct
+            }
+        }
+        return state.ingredientLevels[ingredient.id] ?: ingredient.baselineVal
+    }
+
+    fun applyIngredientValue(
+        current: PhysiologyState,
+        ingredient: BiochemicalIngredient,
+        newTargetValue: Double,
+    ): PhysiologyState {
+        val core = ingredient.coreParam
+        if (core != null) {
+            return applyImmediateParamDelta(current, core, newTargetValue)
+        }
+        val clamped = newTargetValue.coerceIn(ingredient.minVal, ingredient.maxVal)
+        val nextLevels = if (abs(clamped - ingredient.baselineVal) < 1e-6) {
+            current.ingredientLevels - ingredient.id
+        } else {
+            current.ingredientLevels + (ingredient.id to clamped)
+        }
+        return stepSimulation(
+            state = current.copy(ingredientLevels = nextLevels),
+            dtSimSeconds = 0.05,
+            forceSample = true,
+        )
+    }
+
     fun stepSimulation(
         state: PhysiologyState,
         dtSimSeconds: Double,
@@ -111,16 +149,54 @@ object PhysiologyEngine {
         val weightFactor = (72.0 / state.profile.weightKg.coerceIn(25.0, 250.0))
         val renalFactor = (state.egfrMlMin / 100.0).coerceIn(0.1, 1.6)
 
+        // Coupled aggregate perturbations from adjusted trace metals, vitamins, hormones & metabolites
+        var ingGlucoseBias = 0.0
+        var ingInsulinBias = 0.0
+        var ingSodiumBias = 0.0
+        var ingPotassiumBias = 0.0
+        var ingHydrationBias = 0.0
+        var ingSympBias = 0.0
+        var ingFiO2Bias = 0.0
+        var ingHco3Bias = 0.0
+        var ingEgfrBias = 0.0
+        if (state.ingredientLevels.isNotEmpty()) {
+            state.ingredientLevels.forEach { (id, level) ->
+                val ing = IngredientCatalog.byId(id)
+                if (ing.coreParam == null) {
+                    val span = (ing.maxVal - ing.baselineVal).coerceAtLeast(1e-3)
+                    val lowSpan = (ing.baselineVal - ing.minVal).coerceAtLeast(1e-3)
+                    val norm = if (level >= ing.baselineVal) {
+                        ((level - ing.baselineVal) / span).coerceIn(0.0, 1.0)
+                    } else {
+                        -((ing.baselineVal - level) / lowSpan).coerceIn(0.0, 1.0)
+                    }
+                    val e = ing.effects
+                    ingGlucoseBias += e.glucoseDelta * norm
+                    ingInsulinBias += e.insulinDelta * norm
+                    ingSodiumBias += e.sodiumDelta * norm
+                    ingPotassiumBias += e.potassiumDelta * norm
+                    ingHydrationBias += e.hydrationDelta * norm
+                    ingSympBias += e.sympatheticDelta * norm
+                    ingFiO2Bias += e.fiO2Delta * norm
+                    ingHco3Bias += e.hco3Delta * norm
+                    ingEgfrBias += e.egfrDelta * norm
+                }
+            }
+        }
+        val effectiveHydration = (state.hydrationPct + ingHydrationBias).coerceIn(65.0, 135.0)
+        val effectiveSymp = (state.sympatheticDrivePct + ingSympBias).coerceIn(35.0, 235.0)
+        val effectiveFiO2 = (state.fiO2Pct + ingFiO2Bias).coerceIn(11.0, 65.0)
+
         // 1. Insulin kinetics (pancreatic beta-cell response + clearance)
         val targetEndogenousInsulin = 8.0 + max(0.0, state.glucoseMgDl - 90.0) * 0.28 +
-            state.levers.insulinOffsetUiMl * 0.45
+            state.levers.insulinOffsetUiMl * 0.45 + ingInsulinBias
         val insulinClearanceRate = 0.095 * (0.65 + 0.35 * renalFactor) // min^-1 (~7.3 min t1/2)
         val dInsulinPerMin = (targetEndogenousInsulin - state.insulinUiMl) * insulinClearanceRate
         val nextInsulin = (state.insulinUiMl + dInsulinPerMin * dtMin).coerceIn(1.0, 180.0)
 
         // 2. Glucose kinetics (hepatic output vs insulin-mediated uptake + renal glucosuria > 180)
         val insulinSensitivity = (0.0125 * weightFactor) * (1.0 / (1.0 + max(0.0, derived.bmi - 25.0) * 0.04))
-        val hepaticRelease = 1.65 + (state.sympatheticDrivePct - 100.0) * 0.025
+        val hepaticRelease = 1.65 + (effectiveSymp - 100.0) * 0.025 + ingGlucoseBias * 0.05
         val cellularUptake = insulinSensitivity * nextInsulin * (state.glucoseMgDl / 90.0)
         val renalSpillover = if (state.glucoseMgDl > 180.0) {
             (state.glucoseMgDl - 180.0) * 0.035 * renalFactor
@@ -133,13 +209,13 @@ object PhysiologyEngine {
         val ketoacidLoad = max(0.0, nextGlucose - 240.0) * 0.018 * (12.0 / max(4.0, nextInsulin))
         val lactateLoad = max(0.0, 92.0 - state.spO2Pct) * 0.22 +
             max(0.0, 65.0 - state.mapMmHg) * 0.14
-        val targetHco3 = (24.0 - ketoacidLoad - lactateLoad).coerceIn(8.0, 32.0)
+        val targetHco3 = (24.0 - ketoacidLoad - lactateLoad + ingHco3Bias).coerceIn(8.0, 34.0)
         val nextHco3 = state.hco3MeqL + (targetHco3 - state.hco3MeqL) * min(1.0, 0.18 * dtMin)
 
         // Respiratory compensation + sympathetic drive
         val metabolicAcidDrive = max(0.0, 24.0 - nextHco3) * 1.1
         val hypoxiaDrive = max(0.0, 94.0 - state.spO2Pct) * 0.75
-        val targetRespRate = (14.0 + metabolicAcidDrive + hypoxiaDrive + (state.sympatheticDrivePct - 100.0) * 0.05)
+        val targetRespRate = (14.0 + metabolicAcidDrive + hypoxiaDrive + (effectiveSymp - 100.0) * 0.05)
             .coerceIn(7.0, 38.0)
         val nextRespRate = state.respiratoryRateBpm + (targetRespRate - state.respiratoryRateBpm) * min(1.0, 0.55 * dtMin)
 
@@ -149,7 +225,7 @@ object PhysiologyEngine {
         val dPhPerMin = if (dtMin > 0) (nextPh - state.bloodPh) / dtMin else 0.0
 
         // Alveolar gas equation approximation
-        val alveolarO2 = (state.fiO2Pct / 100.0) * 713.0 - (nextPaCo2 / 0.8)
+        val alveolarO2 = (effectiveFiO2 / 100.0) * 713.0 - (nextPaCo2 / 0.8)
         val targetPaO2 = (alveolarO2 - 8.0).coerceIn(32.0, 350.0)
         val nextPaO2 = state.paO2MmHg + (targetPaO2 - state.paO2MmHg) * min(1.0, 0.9 * dtMin)
         val nextSpO2 = hillSpO2(nextPaO2)
@@ -157,7 +233,7 @@ object PhysiologyEngine {
 
         // 4. Electrolytes (Sodium & Potassium)
         val osmoticWaterPull = max(0.0, nextGlucose - 100.0) * 0.016
-        val tbwDilutionTarget = 140.0 * (100.0 / state.hydrationPct.coerceIn(70.0, 130.0)) - osmoticWaterPull
+        val tbwDilutionTarget = 140.0 * (100.0 / effectiveHydration.coerceIn(70.0, 130.0)) - osmoticWaterPull + ingSodiumBias
         val dSodiumPerMin = (tbwDilutionTarget - state.sodiumMeqL) * 0.08 * (0.5 + 0.5 * renalFactor)
         val nextSodium = (state.sodiumMeqL + dSodiumPerMin * dtMin).coerceIn(110.0, 170.0)
 
@@ -165,21 +241,22 @@ object PhysiologyEngine {
         val phShiftK = (7.40 - nextPh) * 5.2
         val insulinShiftK = -(nextInsulin - 8.0) * 0.016
         val renalClearanceK = (state.potassiumMeqL - 4.1) * 0.09 * renalFactor
-        val targetPotassium = (4.1 + phShiftK + insulinShiftK + state.levers.potassiumOffsetMeqL * 0.35).coerceIn(2.0, 8.2)
+        val targetPotassium = (4.1 + phShiftK + insulinShiftK + state.levers.potassiumOffsetMeqL * 0.35 + ingPotassiumBias)
+            .coerceIn(2.0, 8.2)
         val dPotassiumPerMin = (targetPotassium - state.potassiumMeqL) * 0.14 - renalClearanceK * 0.35
         val nextPotassium = (state.potassiumMeqL + dPotassiumPerMin * dtMin).coerceIn(2.0, 8.2)
 
         // 5. Hemodynamics & Renal Autoregulation
         val osmolality = computeOsmolality(nextSodium, nextGlucose)
-        val preloadFactor = (state.hydrationPct / 100.0) * (1.0 + (nextSodium - 140.0) * 0.004)
-        val svrFactor = (state.sympatheticDrivePct / 100.0) * (1.0 + max(0.0, 92.0 - nextSpO2) * 0.012)
+        val preloadFactor = (effectiveHydration / 100.0) * (1.0 + (nextSodium - 140.0) * 0.004)
+        val svrFactor = (effectiveSymp / 100.0) * (1.0 + max(0.0, 92.0 - nextSpO2) * 0.012)
         val targetMap = (derived.restingMapMmHg * preloadFactor * (0.45 + 0.55 * svrFactor)).coerceIn(45.0, 165.0)
         val dMapPerMin = (targetMap - state.mapMmHg) * 0.75
         val nextMap = (state.mapMmHg + dMapPerMin * dtMin).coerceIn(45.0, 165.0)
 
         // Baroreceptor reflex: low MAP raises HR; high sympathetic raises HR; severe hyperkalemia (>6.0) causes conduction bradycardia risk
         val baroHrDelta = (derived.restingMapMmHg - nextMap) * 0.55
-        val sympHrDelta = (state.sympatheticDrivePct - 100.0) * 0.42
+        val sympHrDelta = (effectiveSymp - 100.0) * 0.42
         val hyperKBrake = if (nextPotassium > 6.2) -(nextPotassium - 6.2) * 18.0 else 0.0
         val targetHr = (state.profile.restingHeartRateBpm + baroHrDelta + sympHrDelta + hyperKBrake)
             .coerceIn(34.0, 195.0)
@@ -198,7 +275,7 @@ object PhysiologyEngine {
             nextMap > 140.0 -> 1.0 - (nextMap - 140.0) * 0.004
             else -> 0.94 + (nextMap - 70.0) / 70.0 * 0.08
         }.coerceIn(0.18, 1.15)
-        val targetEgfr = (derived.baselineEgfr * perfusionFactor).coerceIn(5.0, 185.0)
+        val targetEgfr = (derived.baselineEgfr * perfusionFactor + ingEgfrBias).coerceIn(5.0, 185.0)
         val dEgfrPerMin = (targetEgfr - state.egfrMlMin) * 0.35
         val nextEgfr = (state.egfrMlMin + dEgfrPerMin * dtMin).coerceIn(5.0, 185.0)
 
@@ -638,6 +715,25 @@ object PhysiologyEngine {
             symptoms = state.regionTelemetry[BodyRegion.BRAIN]?.symptoms ?: emptyList(),
         )
 
+        state.ingredientLevels.entries.take(3).forEach { (id, level) ->
+            val ing = IngredientCatalog.byId(id)
+            val ratio = abs(level - ing.baselineVal) / (ing.maxVal - ing.minVal).coerceAtLeast(1.0)
+            if (ratio > 0.06) {
+                nodes += CausalNode(
+                    id = "node_ing_$id",
+                    stepOrder = nodes.size + 1,
+                    sourceRegion = BodyRegion.DIGESTIVE_GI,
+                    targetRegion = ing.targetRegion,
+                    title = "${ing.name} Cascade",
+                    equationSummary = ing.mechanism,
+                    numericDelta = "${ing.symbol} ${formatCompact(level)} ${ing.unit} (norm ${ing.normalRange})",
+                    onsetTimeSec = max(0.0, tBase + 4.0),
+                    severity = if (ratio > 0.45) SeverityLevel.CRITICAL else if (ratio > 0.22) SeverityLevel.CAUTION else SeverityLevel.NORMAL,
+                    symptoms = listOf(ing.mechanism),
+                )
+            }
+        }
+
         return nodes.mapIndexed { idx, node -> node.copy(stepOrder = idx + 1) }
     }
 
@@ -650,6 +746,10 @@ object PhysiologyEngine {
         if (abs(state.hydrationPct - 100.0) > 3.0) parts += "Vol ${state.hydrationPct.toInt()}%"
         if (abs(state.sympatheticDrivePct - 100.0) > 12.0) parts += "Symp ${state.sympatheticDrivePct.toInt()}%"
         if (abs(state.fiO2Pct - 21.0) > 1.5) parts += "FiO₂ ${state.fiO2Pct.toInt()}%"
+        state.ingredientLevels.entries.take(3).forEach { (id, level) ->
+            val ing = IngredientCatalog.byId(id)
+            parts += "${ing.symbol} ${formatCompact(level)}"
+        }
         return if (parts.isEmpty()) "Baseline Homeostasis" else parts.joinToString(" • ").take(195)
     }
 

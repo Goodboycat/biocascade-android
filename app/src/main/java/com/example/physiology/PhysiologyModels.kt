@@ -250,4 +250,5 @@ data class PhysiologyState(
     val history: List<PhysiologySample> = emptyList(),
     val stimulusSummary: String = "Baseline Homeostasis",
     val criticalCount: Int = 0,
+    val ingredientLevels: Map<String, Double> = emptyMap(),
 )
