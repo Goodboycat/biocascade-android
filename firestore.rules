@@ -1,0 +1,145 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidProfile(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.label is string && data.label.size() >= 1 && data.label.size() <= 80 &&
+             data.ageYears is int && data.ageYears >= 1 && data.ageYears <= 120 &&
+             data.biologicalSex in ['MALE', 'FEMALE'] &&
+             data.weightKg is number && data.weightKg >= 20 && data.weightKg <= 300 &&
+             data.heightCm is number && data.heightCm >= 80 && data.heightCm <= 250 &&
+             data.serumCreatinineMgDl is number && data.serumCreatinineMgDl >= 0.2 && data.serumCreatinineMgDl <= 15 &&
+             data.restingHeartRateBpm is int && data.restingHeartRateBpm >= 30 && data.restingHeartRateBpm <= 180 &&
+             data.restingSystolicMmHg is int && data.restingSystolicMmHg >= 60 && data.restingSystolicMmHg <= 240 &&
+             data.restingDiastolicMmHg is int && data.restingDiastolicMmHg >= 40 && data.restingDiastolicMmHg <= 140;
+    }
+
+    function isValidRecord(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.profileLabel is string && data.profileLabel.size() >= 1 && data.profileLabel.size() <= 80 &&
+             data.stimulusSummary is string && data.stimulusSummary.size() >= 1 && data.stimulusSummary.size() <= 200 &&
+             data.simElapsedSeconds is number && data.simElapsedSeconds >= 0 &&
+             data.glucoseMgDl is number && data.glucoseMgDl >= 10 && data.glucoseMgDl <= 1500 &&
+             data.insulinUiMl is number && data.insulinUiMl >= 0 && data.insulinUiMl <= 500 &&
+             data.sodiumMeqL is number && data.sodiumMeqL >= 90 && data.sodiumMeqL <= 190 &&
+             data.potassiumMeqL is number && data.potassiumMeqL >= 1.5 && data.potassiumMeqL <= 10.0 &&
+             data.heartRateBpm is int && data.heartRateBpm >= 20 && data.heartRateBpm <= 260 &&
+             data.systolicBp is int && data.systolicBp >= 40 && data.systolicBp <= 280 &&
+             data.diastolicBp is int && data.diastolicBp >= 20 && data.diastolicBp <= 180 &&
+             data.egfrMlMin is number && data.egfrMlMin >= 1 && data.egfrMlMin <= 220 &&
+             data.spO2Pct is number && data.spO2Pct >= 40 && data.spO2Pct <= 100 &&
+             data.bloodPh is number && data.bloodPh >= 6.5 && data.bloodPh <= 7.8 &&
+             data.criticalCount is int && data.criticalCount >= 0 && data.criticalCount <= 50 &&
+             data.encryptedPayloadHash is string && data.encryptedPayloadHash.size() >= 1 && data.encryptedPayloadHash.size() <= 128;
+    }
+
+    function isValidAuditEntry(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.action in ['PROFILE_SAVED', 'RECORD_SYNCED', 'PDF_EXPORTED', 'DATA_CLEARED'] &&
+             data.detail is string && data.detail.size() >= 1 && data.detail.size() <= 200;
+    }
+
+    match /users/{userId}/profiles/{profileId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(profileId);
+      allow create: if isOwner(userId) &&
+                       isValidId(profileId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'label', 'ageYears', 'biologicalSex', 'weightKg', 'heightCm',
+                         'serumCreatinineMgDl', 'restingHeartRateBpm', 'restingSystolicMmHg',
+                         'restingDiastolicMmHg', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'label', 'ageYears', 'biologicalSex', 'weightKg', 'heightCm',
+                         'serumCreatinineMgDl', 'restingHeartRateBpm', 'restingSystolicMmHg',
+                         'restingDiastolicMmHg', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidProfile(incoming(), userId);
+      allow update: if isOwner(userId) &&
+                       isValidId(profileId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidProfile(incoming(), userId) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'label', 'ageYears', 'biologicalSex', 'weightKg', 'heightCm',
+                         'serumCreatinineMgDl', 'restingHeartRateBpm', 'restingSystolicMmHg',
+                         'restingDiastolicMmHg', 'updatedAt'
+                       ]);
+      allow delete: if isOwner(userId) && isValidId(profileId);
+    }
+
+    match /users/{userId}/records/{recordId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(recordId);
+      allow create: if isOwner(userId) &&
+                       isValidId(recordId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'profileLabel', 'stimulusSummary', 'simElapsedSeconds',
+                         'glucoseMgDl', 'insulinUiMl', 'sodiumMeqL', 'potassiumMeqL',
+                         'heartRateBpm', 'systolicBp', 'diastolicBp', 'egfrMlMin',
+                         'spO2Pct', 'bloodPh', 'criticalCount', 'encryptedPayloadHash',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'profileLabel', 'stimulusSummary', 'simElapsedSeconds',
+                         'glucoseMgDl', 'insulinUiMl', 'sodiumMeqL', 'potassiumMeqL',
+                         'heartRateBpm', 'systolicBp', 'diastolicBp', 'egfrMlMin',
+                         'spO2Pct', 'bloodPh', 'criticalCount', 'encryptedPayloadHash',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidRecord(incoming(), userId);
+      allow update: if isOwner(userId) &&
+                       isValidId(recordId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidRecord(incoming(), userId) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'profileLabel', 'stimulusSummary', 'updatedAt'
+                       ]);
+      allow delete: if isOwner(userId) && isValidId(recordId);
+    }
+
+    match /users/{userId}/auditLogs/{logId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(logId);
+      allow create: if isOwner(userId) &&
+                       isValidId(logId) &&
+                       incoming().keys().hasAll(['userId', 'action', 'detail', 'createdAt']) &&
+                       incoming().keys().hasOnly(['userId', 'action', 'detail', 'createdAt']) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       isValidAuditEntry(incoming(), userId);
+      allow update, delete: if false;
+    }
+  }
+}

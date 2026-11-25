@@ -1,0 +1,6 @@
+{
+  "name": "BioCascade",
+  "description": "Real-time multi-system human physiology and cause-effect simulator with NIH medical summaries and encrypted clinical PDF export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

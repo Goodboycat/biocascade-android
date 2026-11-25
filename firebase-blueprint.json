@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "HumanBaselineProfile": {
+      "title": "HumanBaselineProfile",
+      "description": "Linked physiological baseline parameters for an individual subject.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "label": { "type": "string", "description": "Profile label (1-80 chars)." },
+        "ageYears": { "type": "integer", "description": "Age in years (1-120)." },
+        "biologicalSex": { "type": "string", "enum": ["MALE", "FEMALE"] },
+        "weightKg": { "type": "number", "description": "Body mass in kilograms (20-300)." },
+        "heightCm": { "type": "number", "description": "Height in centimeters (80-250)." },
+        "serumCreatinineMgDl": { "type": "number", "description": "Baseline serum creatinine in mg/dL (0.2-15.0)." },
+        "restingHeartRateBpm": { "type": "integer", "description": "Baseline heart rate in bpm (30-180)." },
+        "restingSystolicMmHg": { "type": "integer", "description": "Baseline systolic BP in mmHg (60-240)." },
+        "restingDiastolicMmHg": { "type": "integer", "description": "Baseline diastolic BP in mmHg (40-140)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": [
+        "userId",
+        "label",
+        "ageYears",
+        "biologicalSex",
+        "weightKg",
+        "heightCm",
+        "serumCreatinineMgDl",
+        "restingHeartRateBpm",
+        "restingSystolicMmHg",
+        "restingDiastolicMmHg",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SimulationRecord": {
+      "title": "SimulationRecord",
+      "description": "Saved physiological cause-effect snapshot with HIPAA integrity digest.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "profileLabel": { "type": "string", "description": "Associated profile label." },
+        "stimulusSummary": { "type": "string", "description": "Short summary of manipulated parameters." },
+        "simElapsedSeconds": { "type": "number", "description": "Elapsed simulation time in seconds." },
+        "glucoseMgDl": { "type": "number" },
+        "insulinUiMl": { "type": "number" },
+        "sodiumMeqL": { "type": "number" },
+        "potassiumMeqL": { "type": "number" },
+        "heartRateBpm": { "type": "integer" },
+        "systolicBp": { "type": "integer" },
+        "diastolicBp": { "type": "integer" },
+        "egfrMlMin": { "type": "number" },
+        "spO2Pct": { "type": "number" },
+        "bloodPh": { "type": "number" },
+        "criticalCount": { "type": "integer" },
+        "encryptedPayloadHash": { "type": "string", "description": "SHA-256 hex digest of locally encrypted payload." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": [
+        "userId",
+        "profileLabel",
+        "stimulusSummary",
+        "simElapsedSeconds",
+        "glucoseMgDl",
+        "insulinUiMl",
+        "sodiumMeqL",
+        "potassiumMeqL",
+        "heartRateBpm",
+        "systolicBp",
+        "diastolicBp",
+        "egfrMlMin",
+        "spO2Pct",
+        "bloodPh",
+        "criticalCount",
+        "encryptedPayloadHash",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "HipaaAuditEntry": {
+      "title": "HipaaAuditEntry",
+      "description": "Immutable per-user audit event for HIPAA compliance tracking.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "action": { "type": "string", "enum": ["PROFILE_SAVED", "RECORD_SYNCED", "PDF_EXPORTED", "DATA_CLEARED"] },
+        "detail": { "type": "string", "description": "Non-PII action summary." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." }
+      },
+      "required": ["userId", "action", "detail", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/HumanBaselineProfile" },
+      "description": "User-owned baseline physiological profiles."
+    },
+    "/users/{userId}/records/{recordId}": {
+      "schema": { "$ref": "#/entities/SimulationRecord" },
+      "description": "User-owned simulation snapshots and biometric telemetry logs."
+    },
+    "/users/{userId}/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/HipaaAuditEntry" },
+      "description": "Append-only user audit log for data saves and encrypted PDF exports."
+    }
+  }
+}

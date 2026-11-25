@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">BioCascade</string>
+    <string name="tab_body_lab">Body</string>
+    <string name="tab_med_search">Search</string>
+    <string name="tab_records">Records</string>
+    <string name="auth_title">BioCascade Telemetry</string>
+    <string name="auth_subtitle">HIPAA-aligned encrypted physiological simulation, mathematical cause-effect cascades, and clinical PDF reporting.</string>
+    <string name="auth_google_button">Sign in with Google</string>
+    <string name="auth_security_note">Per-user isolated Firestore records + hardware-backed AES-256-GCM local encryption.</string>
+    <string name="search_placeholder">Search condition, electrolyte, or hormone (e.g. hyperkalemia)</string>
+    <string name="export_pdf_title">Export Encrypted Clinical PDF</string>
+    <string name="export_pdf_subtitle">Protect this report with a 128-bit password before saving for clinical review.</string>
+</resources>

@@ -1,0 +1,126 @@
+{
+  "source": "BodyParts3D (CC BY-SA)",
+  "groups": {
+    "skin_shell": {
+      "file": "anatomy/skin_shell.bmesh",
+      "vertices": 2201,
+      "triangles": 8620,
+      "bytes": 104556,
+      "centroid": [
+        -0.0011747090134609716,
+        0.11039755486330818,
+        -0.02926201027638255
+      ]
+    },
+    "skeleton": {
+      "file": "anatomy/skeleton.bmesh",
+      "vertices": 4910,
+      "triangles": 13490,
+      "bytes": 198792,
+      "centroid": [
+        -0.0015551443230464607,
+        0.34607663097734737,
+        -0.04464148353516218
+      ]
+    },
+    "brain_nervous": {
+      "file": "anatomy/brain_nervous.bmesh",
+      "vertices": 2333,
+      "triangles": 6432,
+      "bytes": 94596,
+      "centroid": [
+        -0.0011154835128915845,
+        0.8706251878724096,
+        -0.029542341775607255
+      ]
+    },
+    "heart": {
+      "file": "anatomy/heart.bmesh",
+      "vertices": 1789,
+      "triangles": 5244,
+      "bytes": 74412,
+      "centroid": [
+        0.026103095375715382,
+        0.4682527640100429,
+        0.01607377778549624
+      ]
+    },
+    "lungs_airway": {
+      "file": "anatomy/lungs_airway.bmesh",
+      "vertices": 2942,
+      "triangles": 7470,
+      "bytes": 115440,
+      "centroid": [
+        0.005890178906340137,
+        0.47222398886017697,
+        -0.009012795117607674
+      ]
+    },
+    "diaphragm": {
+      "file": "anatomy/diaphragm.bmesh",
+      "vertices": 1748,
+      "triangles": 3500,
+      "bytes": 62964,
+      "centroid": [
+        -0.009945538836296966,
+        0.3329771339245465,
+        -0.004228195973959773
+      ]
+    },
+    "liver_pancreas": {
+      "file": "anatomy/liver_pancreas.bmesh",
+      "vertices": 2760,
+      "triangles": 5500,
+      "bytes": 99252,
+      "centroid": [
+        -0.005834848174088066,
+        0.3014506171794905,
+        0.01991109811924089
+      ]
+    },
+    "digestive_gi": {
+      "file": "anatomy/digestive_gi.bmesh",
+      "vertices": 4618,
+      "triangles": 9000,
+      "bytes": 164844,
+      "centroid": [
+        0.00821418642262098,
+        0.13780462654255984,
+        0.0372857155109071
+      ]
+    },
+    "kidneys_urinary": {
+      "file": "anatomy/kidneys_urinary.bmesh",
+      "vertices": 2510,
+      "triangles": 5000,
+      "bytes": 90252,
+      "centroid": [
+        -0.0024235885521178774,
+        0.21450357775192752,
+        -0.04125757290132343
+      ]
+    },
+    "arteries": {
+      "file": "anatomy/arteries.bmesh",
+      "vertices": 3774,
+      "triangles": 7490,
+      "bytes": 135528,
+      "centroid": [
+        0.011927790151107292,
+        0.45324277120297385,
+        -0.01423733283390948
+      ]
+    },
+    "veins": {
+      "file": "anatomy/veins.bmesh",
+      "vertices": 3283,
+      "triangles": 6500,
+      "bytes": 117804,
+      "centroid": [
+        -0.0003649256334927596,
+        0.4338931669929402,
+        -0.017251942752594434
+      ]
+    }
+  }
+}
