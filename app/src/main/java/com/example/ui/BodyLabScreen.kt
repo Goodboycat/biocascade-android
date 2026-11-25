@@ -156,6 +156,7 @@ fun BodyLabScreen(
                 // Live Running Number Strip + Playback Speed Controls
                 LiveVitalStripAndPlayback(
                     state = state,
+                    activeIngredient = activeIngredient,
                     dockMode = dockMode,
                     onToggleDock = { dockMode = if (dockMode == 0) 1 else 0 },
                     onToggleCharts = { dockMode = if (dockMode == 2) 1 else 2 },
@@ -195,6 +196,7 @@ fun BodyLabScreen(
 @Composable
 private fun LiveVitalStripAndPlayback(
     state: PhysiologyState,
+    activeIngredient: BiochemicalIngredient,
     dockMode: Int,
     onToggleDock: () -> Unit,
     onToggleCharts: () -> Unit,
@@ -206,14 +208,23 @@ private fun LiveVitalStripAndPlayback(
     skin: BioSkinPalette,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // Real-time running tabular numerals strip
+        // Real-time running tabular numerals strip (includes active non-core ingredient + modified compounds)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            val metricsToDisplay = listOf("glucose", "potassium", "hr", "map", "egfr", "spo2", "ph")
+            val nonCoreKeys = buildList {
+                if (activeIngredient.coreParam == null) {
+                    add("ing_${activeIngredient.id}")
+                }
+                state.ingredientLevels.keys.forEach { id ->
+                    val k = "ing_$id"
+                    if (k !in this && state.metrics.containsKey(k)) add(k)
+                }
+            }
+            val metricsToDisplay = nonCoreKeys + listOf("glucose", "potassium", "hr", "map", "egfr", "spo2", "ph")
             metricsToDisplay.forEach { key ->
                 val m = state.metrics[key] ?: return@forEach
                 val badgeColor by animateColorAsState(
@@ -227,13 +238,15 @@ private fun LiveVitalStripAndPlayback(
                 Surface(
                     color = skin.surfaceElevated,
                     shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.border(1.dp, badgeColor.copy(alpha = 0.5f), RoundedCornerShape(10.dp)),
+                    modifier = Modifier.border(1.dp, badgeColor.copy(alpha = 0.55f), RoundedCornerShape(10.dp)),
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         Text(
                             text = m.label.uppercase(),
                             style = MaterialTheme.typography.labelSmall,
                             color = skin.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             text = "${PhysiologyEngine.formatCompact(m.value)} ${m.unit}",
@@ -348,16 +361,25 @@ private fun LeverControlPanel(
         ManipulableParam.HYDRATION -> "map"
         ManipulableParam.SYMPATHETIC -> "hr"
         ManipulableParam.OXYGEN_INFLOW -> "spo2"
-        null -> null
+        null -> "ing_${activeIngredient.id}"
     }
-    val readout = metricKey?.let { state.metrics[it] }
-    val subtitleTxt = if (readout != null) {
-        val rateTxt = "dX/dt ${PhysiologyEngine.formatSigned(readout.ratePerMin)}/min"
-        val etaTxt = readout.etaToCriticalSec?.let { " • Crit in ${PhysiologyEngine.formatDuration(it)}" } ?: " • Stable"
-        "$rateTxt$etaTxt"
-    } else {
-        "Norm ${activeIngredient.normalRange} • ${activeIngredient.targetRegion.displayName}"
+    val readout = state.metrics[metricKey]
+    val activeSeverity = readout?.severity ?: activeIngredient.severityFor(currentVal)
+    val severityAccent = when (activeSeverity) {
+        SeverityLevel.NORMAL -> skin.primaryAccent
+        SeverityLevel.CAUTION -> skin.cautionColor
+        SeverityLevel.CRITICAL -> skin.criticalColor
     }
+    val ratePerMin = readout?.ratePerMin ?: state.ingredientRatesPerMin[activeIngredient.id] ?: 0.0
+    val rateTxt = "dX/dt ${PhysiologyEngine.formatSigned(ratePerMin)}/min"
+    val tHalfTxt = "t½ ${activeIngredient.halfLifeMin.toInt()}m"
+    val thresholdStatus = when {
+        readout?.etaToCriticalSec != null -> "Crit in ${PhysiologyEngine.formatDuration(readout.etaToCriticalSec)}"
+        activeSeverity == SeverityLevel.CRITICAL -> readout?.thresholdLabel ?: "CRITICAL"
+        activeSeverity == SeverityLevel.CAUTION -> "CAUTION (${activeIngredient.normalRange})"
+        else -> "Norm ${activeIngredient.normalRange}"
+    }
+    val subtitleTxt = "$rateTxt • $tHalfTxt • $thresholdStatus"
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         // Single Searchable Dropdown Trigger (replaces side-by-side ingredient buttons)
@@ -429,14 +451,21 @@ private fun LeverControlPanel(
                         fontSize = MaterialTheme.typography.titleSmall.fontSize,
                         fontWeight = FontWeight.Bold,
                     ),
-                    color = skin.textPrimary,
+                    color = if (activeSeverity == SeverityLevel.NORMAL) skin.textPrimary else severityAccent,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = subtitleTxt,
                     style = MaterialTheme.typography.labelSmall,
-                    color = skin.primaryAccent,
+                    color = severityAccent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "${activeIngredient.targetRegion.displayName}: ${activeIngredient.mechanism}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = skin.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

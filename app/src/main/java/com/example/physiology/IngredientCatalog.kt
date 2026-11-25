@@ -36,7 +36,90 @@ data class BiochemicalIngredient(
     val mechanism: String,
     val coreParam: ManipulableParam? = null,
     val effects: CoupledEffects = CoupledEffects(),
-)
+) {
+    val supportsLowAlert: Boolean
+        get() = id !in NON_ESSENTIAL_OR_WASTE_IDS && baselineVal > minVal + (maxVal - minVal) * 0.04
+
+    val lowWarn: Double
+        get() = if (!supportsLowAlert) minVal - 10.0 else minVal + (baselineVal - minVal) * 0.50
+
+    val lowCrit: Double
+        get() = if (!supportsLowAlert) minVal - 20.0 else minVal + (baselineVal - minVal) * 0.22
+
+    val highWarn: Double
+        get() = if (!supportsLowAlert) {
+            baselineVal + (maxVal - baselineVal) * 0.16
+        } else {
+            baselineVal + (maxVal - baselineVal) * 0.28
+        }
+
+    val highCrit: Double
+        get() = if (!supportsLowAlert) {
+            baselineVal + (maxVal - baselineVal) * 0.42
+        } else {
+            baselineVal + (maxVal - baselineVal) * 0.58
+        }
+
+    val halfLifeMin: Double
+        get() = when {
+            id == "carbon_monoxide" || id == "nitric_oxide" || id == "cyanide" -> 8.0
+            category == IngredientCategory.HORMONE_PEPTIDE -> 18.0
+            category == IngredientCategory.METABOLITE_CLINICAL -> 32.0
+            category == IngredientCategory.AMINO_NEURO -> 36.0
+            category == IngredientCategory.ELECTROLYTE_GAS -> 42.0
+            category == IngredientCategory.VITAMIN -> 90.0
+            category == IngredientCategory.METAL -> 110.0
+            else -> 45.0
+        }
+
+    val equationFormula: String
+        get() {
+            val drivers = buildList {
+                if (effects.sympatheticDelta != 0.0) add("ΔSVR/HR")
+                if (effects.hco3Delta != 0.0) add("ΔHCO₃⁻→pH")
+                if (effects.egfrDelta != 0.0) add("ΔeGFR")
+                if (effects.fiO2Delta != 0.0) add("ΔPaO₂/SpO₂")
+                if (effects.glucoseDelta != 0.0 || effects.insulinDelta != 0.0) add("ΔG/Ins")
+                if (effects.potassiumDelta != 0.0 || effects.sodiumDelta != 0.0) add("ΔNa⁺/K⁺")
+                if (effects.hydrationDelta != 0.0) add("ΔPreload")
+            }.joinToString(", ").ifEmpty { "Homeostatic coupling" }
+            return "d[$symbol]/dt = -k·(C-C₀) [t½=${halfLifeMin.toInt()}m] → $drivers"
+        }
+
+    fun clinicalStatusText(level: Double): String {
+        val sev = severityFor(level)
+        return when {
+            sev == SeverityLevel.CRITICAL && level >= highCrit ->
+                "CRITICAL excess $name (${PhysiologyEngine.formatCompact(level)} $unit): $mechanism"
+            sev == SeverityLevel.CAUTION && level >= highWarn ->
+                "Elevated $name (${PhysiologyEngine.formatCompact(level)} $unit): $mechanism"
+            sev == SeverityLevel.CRITICAL && supportsLowAlert && level <= lowCrit ->
+                "CRITICAL deficiency $name (${PhysiologyEngine.formatCompact(level)} $unit): impaired ${targetRegion.systemTag.lowercase()} support"
+            sev == SeverityLevel.CAUTION && supportsLowAlert && level <= lowWarn ->
+                "Low $name (${PhysiologyEngine.formatCompact(level)} $unit): reduced ${targetRegion.systemTag.lowercase()} reserve"
+            else ->
+                "$name at ${PhysiologyEngine.formatCompact(level)} $unit (norm $normalRange)"
+        }
+    }
+
+    fun severityFor(level: Double): SeverityLevel = when {
+        level >= highCrit || (supportsLowAlert && level <= lowCrit) -> SeverityLevel.CRITICAL
+        level >= highWarn || (supportsLowAlert && level <= lowWarn) -> SeverityLevel.CAUTION
+        else -> SeverityLevel.NORMAL
+    }
+
+    private companion object {
+        val NON_ESSENTIAL_OR_WASTE_IDS = setOf(
+            "lithium", "nickel", "fluoride", "vanadium",
+            "lead", "mercury", "arsenic", "cadmium", "aluminum", "thallium", "bismuth",
+            "l_theanine", "nac", "l_dopa", "histamine", "calcitonin",
+            "lactate", "urea_bun", "creatinine", "uric_acid", "bilirubin", "ammonia", "ketones_bhb",
+            "ldl_cholesterol", "triglycerides", "caffeine", "ethanol", "methanol",
+            "acetaminophen", "salicylate", "metformin", "furosemide", "digoxin",
+            "warfarin", "heparin", "nitric_oxide", "carbon_monoxide", "cyanide",
+        )
+    }
+}
 
 object IngredientCatalog {
 

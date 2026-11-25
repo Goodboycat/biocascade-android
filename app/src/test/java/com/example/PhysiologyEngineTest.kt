@@ -73,7 +73,7 @@ class PhysiologyEngineTest {
     }
 
     @Test
-    fun nonCoreIngredient_caffeineAndLactate_coupleToPhysiologyAndCausalChain() {
+    fun nonCoreIngredient_caffeineAndIron_coupleToPhysiologyOrgansAndCriticalReadouts() {
         var state = PhysiologyEngine.initialState(HumanBaselineProfile())
         val caffeine = IngredientCatalog.byId("caffeine")
         state = PhysiologyEngine.applyIngredientValue(state, caffeine, 36.0)
@@ -83,5 +83,14 @@ class PhysiologyEngineTest {
         assertTrue("High caffeine should elevate heart rate (${state.heartRateBpm})", state.heartRateBpm > 71.0)
         assertTrue("High caffeine should raise MAP (${state.mapMmHg})", state.mapMmHg > 93.0)
         assertTrue("Causal chain should include active ingredient cascade", state.causalChain.any { it.id == "node_ing_caffeine" })
+        val caffReadout = state.metrics["ing_caffeine"]
+        assertTrue("Caffeine readout must exist with live clearance rate", caffReadout != null && caffReadout.ratePerMin < 0.0)
+        assertEquals(SeverityLevel.CRITICAL, caffReadout?.severity)
+
+        val lead = IngredientCatalog.byId("lead")
+        val leadCrit = PhysiologyEngine.applyIngredientValue(state, lead, 70.0)
+        assertEquals(SeverityLevel.CRITICAL, leadCrit.metrics.getValue("ing_lead").severity)
+        assertTrue("Critical count should reflect critical ingredient", leadCrit.criticalCount >= 1)
+        assertEquals(SeverityLevel.CRITICAL, leadCrit.regionTelemetry.getValue(lead.targetRegion).severity)
     }
 }

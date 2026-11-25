@@ -101,6 +101,14 @@ object PhysiologyEngine {
         return stepSimulation(updated, dtSimSeconds = 0.05, forceSample = true)
     }
 
+    fun withActiveIngredient(
+        current: PhysiologyState,
+        ingredient: BiochemicalIngredient,
+    ): PhysiologyState {
+        val updated = current.copy(activeIngredientId = ingredient.id)
+        return stepSimulation(updated, dtSimSeconds = 0.0, forceSample = false)
+    }
+
     fun getIngredientValue(state: PhysiologyState, ingredient: BiochemicalIngredient): Double {
         val core = ingredient.coreParam
         if (core != null) {
@@ -117,6 +125,16 @@ object PhysiologyEngine {
         return state.ingredientLevels[ingredient.id] ?: ingredient.baselineVal
     }
 
+    private fun normalizedIngredientDeviation(ing: BiochemicalIngredient, level: Double): Double {
+        val highSpan = (ing.maxVal - ing.baselineVal).coerceAtLeast(1e-3)
+        val lowSpan = (ing.baselineVal - ing.minVal).coerceAtLeast(1e-3)
+        return if (level >= ing.baselineVal) {
+            ((level - ing.baselineVal) / highSpan).coerceIn(0.0, 1.0)
+        } else {
+            -((ing.baselineVal - level) / lowSpan).coerceIn(0.0, 1.0)
+        }
+    }
+
     fun applyIngredientValue(
         current: PhysiologyState,
         ingredient: BiochemicalIngredient,
@@ -124,16 +142,53 @@ object PhysiologyEngine {
     ): PhysiologyState {
         val core = ingredient.coreParam
         if (core != null) {
-            return applyImmediateParamDelta(current, core, newTargetValue)
+            return applyImmediateParamDelta(
+                current.copy(activeIngredientId = ingredient.id),
+                core,
+                newTargetValue,
+            )
         }
         val clamped = newTargetValue.coerceIn(ingredient.minVal, ingredient.maxVal)
+        val prevLevel = current.ingredientLevels[ingredient.id] ?: ingredient.baselineVal
+        val deltaNorm = normalizedIngredientDeviation(ingredient, clamped) -
+            normalizedIngredientDeviation(ingredient, prevLevel)
+        val eff = ingredient.effects
+
+        // Apply immediate pharmacodynamic onset response so vitals and 3D organs react on slider move
+        val nextHco3 = (current.hco3MeqL + eff.hco3Delta * deltaNorm * 0.65).coerceIn(8.0, 36.0)
+        val nextPh = (6.1 + log10(max(1.0, nextHco3) / (0.03 * max(10.0, current.paCo2MmHg)))).coerceIn(6.85, 7.68)
+        val nextPaO2 = (current.paO2MmHg + eff.fiO2Delta * deltaNorm * 4.5).coerceIn(32.0, 350.0)
+        val nextSpO2 = hillSpO2(nextPaO2)
+        val nextMap = (current.mapMmHg + (eff.sympatheticDelta * 0.42 + eff.hydrationDelta * 1.1) * deltaNorm)
+            .coerceIn(45.0, 165.0)
+        val nextHr = (current.heartRateBpm + eff.sympatheticDelta * 0.48 * deltaNorm).coerceIn(34.0, 195.0)
+        val nextEgfr = (current.egfrMlMin + eff.egfrDelta * deltaNorm * 0.65).coerceIn(5.0, 185.0)
+        val nextGlucose = (current.glucoseMgDl + eff.glucoseDelta * deltaNorm * 0.75).coerceIn(30.0, 600.0)
+        val nextInsulin = (current.insulinUiMl + eff.insulinDelta * deltaNorm * 0.75).coerceIn(1.0, 180.0)
+        val nextSodium = (current.sodiumMeqL + eff.sodiumDelta * deltaNorm * 0.65).coerceIn(110.0, 170.0)
+        val nextPotassium = (current.potassiumMeqL + eff.potassiumDelta * deltaNorm * 0.65).coerceIn(2.0, 8.2)
+
         val nextLevels = if (abs(clamped - ingredient.baselineVal) < 1e-6) {
             current.ingredientLevels - ingredient.id
         } else {
             current.ingredientLevels + (ingredient.id to clamped)
         }
         return stepSimulation(
-            state = current.copy(ingredientLevels = nextLevels),
+            state = current.copy(
+                activeIngredientId = ingredient.id,
+                ingredientLevels = nextLevels,
+                glucoseMgDl = nextGlucose,
+                insulinUiMl = nextInsulin,
+                sodiumMeqL = nextSodium,
+                potassiumMeqL = nextPotassium,
+                heartRateBpm = nextHr,
+                mapMmHg = nextMap,
+                egfrMlMin = nextEgfr,
+                hco3MeqL = nextHco3,
+                bloodPh = nextPh,
+                paO2MmHg = nextPaO2,
+                spO2Pct = nextSpO2,
+            ),
             dtSimSeconds = 0.05,
             forceSample = true,
         )
@@ -149,7 +204,7 @@ object PhysiologyEngine {
         val weightFactor = (72.0 / state.profile.weightKg.coerceIn(25.0, 250.0))
         val renalFactor = (state.egfrMlMin / 100.0).coerceIn(0.1, 1.6)
 
-        // Coupled aggregate perturbations from adjusted trace metals, vitamins, hormones & metabolites
+        // Coupled aggregate perturbations + real pharmacokinetic clearance for non-core ingredients
         var ingGlucoseBias = 0.0
         var ingInsulinBias = 0.0
         var ingSodiumBias = 0.0
@@ -159,17 +214,25 @@ object PhysiologyEngine {
         var ingFiO2Bias = 0.0
         var ingHco3Bias = 0.0
         var ingEgfrBias = 0.0
+        val nextIngredientLevels = LinkedHashMap<String, Double>(state.ingredientLevels.size)
+        val nextIngredientRates = LinkedHashMap<String, Double>(state.ingredientLevels.size)
+
         if (state.ingredientLevels.isNotEmpty()) {
             state.ingredientLevels.forEach { (id, level) ->
                 val ing = IngredientCatalog.byId(id)
                 if (ing.coreParam == null) {
-                    val span = (ing.maxVal - ing.baselineVal).coerceAtLeast(1e-3)
-                    val lowSpan = (ing.baselineVal - ing.minVal).coerceAtLeast(1e-3)
-                    val norm = if (level >= ing.baselineVal) {
-                        ((level - ing.baselineVal) / span).coerceIn(0.0, 1.0)
+                    val k = (ln(2.0) / ing.halfLifeMin) * (0.65 + 0.35 * renalFactor)
+                    val dIngPerMin = if (level >= ing.baselineVal) {
+                        -(level - ing.baselineVal) * k
                     } else {
-                        -((ing.baselineVal - level) / lowSpan).coerceIn(0.0, 1.0)
+                        (ing.baselineVal - level) * (k * 0.35)
                     }
+                    val nextLevel = (level + dIngPerMin * dtMin).coerceIn(ing.minVal, ing.maxVal)
+                    if (abs(nextLevel - ing.baselineVal) > 1e-4) {
+                        nextIngredientLevels[id] = nextLevel
+                        nextIngredientRates[id] = dIngPerMin
+                    }
+                    val norm = normalizedIngredientDeviation(ing, nextLevel)
                     val e = ing.effects
                     ingGlucoseBias += e.glucoseDelta * norm
                     ingInsulinBias += e.insulinDelta * norm
@@ -304,6 +367,8 @@ object PhysiologyEngine {
             hco3MeqL = nextHco3,
             bloodPh = nextPh,
             serumOsmolalityMOsm = osmolality,
+            ingredientLevels = nextIngredientLevels,
+            ingredientRatesPerMin = nextIngredientRates,
         )
 
         return enrichReadoutsAndChain(
@@ -391,6 +456,35 @@ object PhysiologyEngine {
             "spo2" to spo2Readout,
             "ph" to phReadout,
         )
+
+        // Add live MetricReadout for every active or modified non-core ingredient
+        val trackedNonCoreIds = LinkedHashSet<String>()
+        state.ingredientLevels.keys.forEach { trackedNonCoreIds.add(it) }
+        val activeIng = IngredientCatalog.byId(state.activeIngredientId)
+        if (activeIng.coreParam == null) {
+            trackedNonCoreIds.add(activeIng.id)
+        }
+        trackedNonCoreIds.forEach { ingId ->
+            val ing = IngredientCatalog.byId(ingId)
+            if (ing.coreParam == null) {
+                val lvl = state.ingredientLevels[ingId] ?: ing.baselineVal
+                val rate = state.ingredientRatesPerMin[ingId] ?: 0.0
+                val readout = buildReadout(
+                    id = "ing_$ingId",
+                    label = ing.name,
+                    value = lvl,
+                    unit = ing.unit,
+                    normalRange = ing.normalRange,
+                    ratePerMin = rate,
+                    halfLifeMin = ing.halfLifeMin,
+                    lowWarn = ing.lowWarn,
+                    lowCrit = ing.lowCrit,
+                    highWarn = ing.highWarn,
+                    highCrit = ing.highCrit,
+                )
+                metrics["ing_$ingId"] = readout
+            }
+        }
 
         val regionMap = buildRegionTelemetry(state, metrics)
         val chain = buildCausalChain(state, metrics)
@@ -555,7 +649,7 @@ object PhysiologyEngine {
             if (isEmpty()) add("Splanchnic absorption active (${splanchnicPerfusionPct.toInt()}% flow)")
         }
 
-        return mapOf(
+        val baseMap = mapOf(
             BodyRegion.BRAIN to RegionTelemetry(
                 BodyRegion.BRAIN, brainSeverity,
                 "${state.serumOsmolalityMOsm.toInt()} mOsm",
@@ -613,6 +707,43 @@ object PhysiologyEngine {
                 vesselsSymptoms,
             ),
         )
+
+        // Overlay active/modified non-core ingredients directly onto their target 3D organs & containers
+        val enriched = baseMap.toMutableMap()
+        state.ingredientLevels.forEach { (ingId, level) ->
+            val ing = IngredientCatalog.byId(ingId)
+            if (ing.coreParam == null) {
+                val region = ing.targetRegion
+                val existing = enriched[region] ?: return@forEach
+                val ingSev = ing.severityFor(level)
+                val mergedSev = maxSeverity(existing.severity, ingSev)
+                val rate = state.ingredientRatesPerMin[ingId] ?: 0.0
+                val isFocused = state.activeIngredientId == ingId
+                val updatedSymptoms = listOf(ing.clinicalStatusText(level)) + existing.symptoms
+                enriched[region] = existing.copy(
+                    severity = mergedSev,
+                    secondaryNumber = if (isFocused || ingSev != SeverityLevel.NORMAL) {
+                        "${ing.symbol} ${formatCompact(level)} ${ing.unit}"
+                    } else {
+                        existing.secondaryNumber
+                    },
+                    rateText = if (isFocused && abs(rate) > 1e-3) {
+                        "d[${ing.symbol}]/dt ${formatSigned(rate)}/m"
+                    } else {
+                        existing.rateText
+                    },
+                    etaText = if (ingSev == SeverityLevel.CRITICAL) {
+                        "${ing.symbol} CRIT"
+                    } else if (ingSev == SeverityLevel.CAUTION) {
+                        "${ing.symbol} WARN"
+                    } else {
+                        existing.etaText
+                    },
+                    symptoms = updatedSymptoms.distinct().take(4),
+                )
+            }
+        }
+        return enriched
     }
 
     private fun buildCausalChain(
@@ -715,26 +846,29 @@ object PhysiologyEngine {
             symptoms = state.regionTelemetry[BodyRegion.BRAIN]?.symptoms ?: emptyList(),
         )
 
-        state.ingredientLevels.entries.take(3).forEach { (id, level) ->
+        state.ingredientLevels.entries.forEach { (id, level) ->
             val ing = IngredientCatalog.byId(id)
-            val ratio = abs(level - ing.baselineVal) / (ing.maxVal - ing.minVal).coerceAtLeast(1.0)
-            if (ratio > 0.06) {
+            if (ing.coreParam == null) {
+                val rate = state.ingredientRatesPerMin[id] ?: 0.0
+                val sev = ing.severityFor(level)
                 nodes += CausalNode(
                     id = "node_ing_$id",
                     stepOrder = nodes.size + 1,
                     sourceRegion = BodyRegion.DIGESTIVE_GI,
                     targetRegion = ing.targetRegion,
                     title = "${ing.name} Cascade",
-                    equationSummary = ing.mechanism,
-                    numericDelta = "${ing.symbol} ${formatCompact(level)} ${ing.unit} (norm ${ing.normalRange})",
-                    onsetTimeSec = max(0.0, tBase + 4.0),
-                    severity = if (ratio > 0.45) SeverityLevel.CRITICAL else if (ratio > 0.22) SeverityLevel.CAUTION else SeverityLevel.NORMAL,
-                    symptoms = listOf(ing.mechanism),
+                    equationSummary = ing.equationFormula,
+                    numericDelta = "${ing.symbol} ${formatCompact(level)} ${ing.unit} (${formatSigned(rate)}/min)",
+                    onsetTimeSec = max(0.0, tBase + 2.0),
+                    severity = sev,
+                    symptoms = listOf(ing.clinicalStatusText(level)),
                 )
             }
         }
 
-        return nodes.mapIndexed { idx, node -> node.copy(stepOrder = idx + 1) }
+        // Put active ingredient node first if present so user immediately sees its math & delta
+        val orderedNodes = nodes.sortedBy { if (it.id == "node_ing_${state.activeIngredientId}") 0 else 1 }
+        return orderedNodes.mapIndexed { idx, node -> node.copy(stepOrder = idx + 1) }
     }
 
     private fun buildStimulusSummary(state: PhysiologyState): String {

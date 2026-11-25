@@ -169,7 +169,12 @@ class PhysiologyViewModel(
     }
 
     fun resetSimulation() {
-        _physiologyState.update { PhysiologyEngine.initialState(it.profile) }
+        _physiologyState.update {
+            PhysiologyEngine.withActiveIngredient(
+                PhysiologyEngine.initialState(it.profile),
+                _activeIngredient.value,
+            )
+        }
     }
 
     fun selectRegion(region: BodyRegion?) {
@@ -177,15 +182,18 @@ class PhysiologyViewModel(
     }
 
     fun selectLever(param: ManipulableParam) {
+        val ing = IngredientCatalog.forCoreParam(param)
         _activeLever.value = param
-        _activeIngredient.value = IngredientCatalog.forCoreParam(param)
+        _activeIngredient.value = ing
         _selectedRegion.value = param.primaryRegion
+        _physiologyState.update { PhysiologyEngine.withActiveIngredient(it, ing) }
     }
 
     fun selectIngredient(ingredient: BiochemicalIngredient) {
         _activeIngredient.value = ingredient
         ingredient.coreParam?.let { _activeLever.value = it }
         _selectedRegion.value = ingredient.targetRegion
+        _physiologyState.update { PhysiologyEngine.withActiveIngredient(it, ingredient) }
     }
 
     fun updateParamValue(param: ManipulableParam, newValue: Double) {
