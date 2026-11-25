@@ -26,7 +26,9 @@ import com.example.ui.MainDashboard
 import com.example.ui.theme.BioCascadeTheme
 import com.example.ui.theme.DashboardSkin
 import com.example.viewmodel.PhysiologyViewModel
+import androidx.compose.ui.platform.LocalContext
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -44,23 +46,29 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
-    var currentUser by remember { mutableStateOf(auth.currentUser) }
-    DisposableEffect(auth) {
-        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-            currentUser = firebaseAuth.currentUser
+fun AppNavigation() {
+    val context = LocalContext.current
+    val firebaseReady = remember(context) { FirebaseApp.getApps(context).isNotEmpty() }
+    val auth = remember(firebaseReady) { if (firebaseReady) Firebase.auth else null }
+    var currentUser by remember(auth) { mutableStateOf(auth?.currentUser) }
+
+    if (auth != null) {
+        DisposableEffect(auth) {
+            val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+                currentUser = firebaseAuth.currentUser
+            }
+            auth.addAuthStateListener(listener)
+            onDispose { auth.removeAuthStateListener(listener) }
         }
-        auth.addAuthStateListener(listener)
-        onDispose { auth.removeAuthStateListener(listener) }
     }
 
     val user = currentUser
-    if (user == null) {
+    if (auth != null && user == null) {
         BioCascadeTheme(skin = DashboardSkin.CLINICAL_OBSIDIAN) {
             AuthScreen(onAuthSuccess = { currentUser = auth.currentUser })
         }
     } else {
-        val uid = user.uid
+        val uid = user?.uid ?: "local-offline-device"
         key(uid) {
             val viewModel: PhysiologyViewModel = viewModel(
                 key = uid,
@@ -69,8 +77,12 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
                         val app = checkNotNull(this[APPLICATION_KEY]) {
                             "APPLICATION_KEY missing from CreationExtras"
                         }
-                        val databaseId = app.getString(R.string.firestore_database_id)
-                        val db = FirebaseFirestore.getInstance(databaseId)
+                        val db = if (auth != null) {
+                            val databaseId = app.getString(R.string.firestore_database_id)
+                            FirebaseFirestore.getInstance(databaseId)
+                        } else {
+                            null
+                        }
                         val crypto = KeystoreCryptoManager(app)
                         PhysiologyViewModel(
                             recordsRepository = ClinicalRecordsRepository(db, crypto, auth),
@@ -86,7 +98,7 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
             BioCascadeTheme(skin = activeSkin) {
                 MainDashboard(
                     viewModel = viewModel,
-                    onSignedOut = { currentUser = auth.currentUser },
+                    onSignedOut = { currentUser = auth?.currentUser },
                 )
             }
         }

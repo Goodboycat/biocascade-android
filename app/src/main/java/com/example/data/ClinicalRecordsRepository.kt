@@ -26,26 +26,34 @@ import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 
 class ClinicalRecordsRepository(
-    private val db: FirebaseFirestore,
+    private val db: FirebaseFirestore?,
     private val cryptoManager: KeystoreCryptoManager,
-    private val auth: FirebaseAuth = Firebase.auth,
+    private val auth: FirebaseAuth? = null,
 ) {
     constructor(context: Context) : this(
-        db = FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        ),
+        db = runCatching {
+            FirebaseFirestore.getInstance(
+                context.applicationContext.getString(R.string.firestore_database_id)
+            )
+        }.getOrNull(),
         cryptoManager = KeystoreCryptoManager(context.applicationContext),
+        auth = runCatching { Firebase.auth }.getOrNull(),
     )
 
     private fun requireUserId(): String =
-        auth.currentUser?.uid
+        auth?.currentUser?.uid
             ?: throw IllegalStateException("User must be signed in with Google before accessing clinical records.")
 
     fun observeProfiles(userId: String): Flow<List<HumanBaselineProfile>> = flow {
+        val firestore = db
+        if (firestore == null || auth == null) {
+            emit(emptyList())
+            return@flow
+        }
         require(userId.isNotBlank()) { "User ID must not be blank" }
         val path = "users/$userId/profiles"
         emitAll(
-            db.collection("users").document(userId).collection("profiles")
+            firestore.collection("users").document(userId).collection("profiles")
                 .orderBy("updatedAt", Query.Direction.DESCENDING)
                 .snapshots()
                 .map { snapshot ->
@@ -69,10 +77,15 @@ class ClinicalRecordsRepository(
     }
 
     fun observeRecords(userId: String): Flow<List<SimulationRecord>> = flow {
+        val firestore = db
+        if (firestore == null || auth == null) {
+            emit(emptyList())
+            return@flow
+        }
         require(userId.isNotBlank()) { "User ID must not be blank" }
         val path = "users/$userId/records"
         emitAll(
-            db.collection("users").document(userId).collection("records")
+            firestore.collection("users").document(userId).collection("records")
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(40)
                 .snapshots()
@@ -97,10 +110,15 @@ class ClinicalRecordsRepository(
     }
 
     fun observeAuditLogs(userId: String): Flow<List<HipaaAuditEntry>> = flow {
+        val firestore = db
+        if (firestore == null || auth == null) {
+            emit(emptyList())
+            return@flow
+        }
         require(userId.isNotBlank()) { "User ID must not be blank" }
         val path = "users/$userId/auditLogs"
         emitAll(
-            db.collection("users").document(userId).collection("auditLogs")
+            firestore.collection("users").document(userId).collection("auditLogs")
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .limit(25)
                 .snapshots()
@@ -127,9 +145,6 @@ class ClinicalRecordsRepository(
     suspend fun saveProfile(userId: String, profile: HumanBaselineProfile): Result<Unit> {
         var docPath = "users/$userId/profiles"
         return try {
-            val uid = requireUserId()
-            check(uid == userId) { "Signed-in user mismatch" }
-
             val cleanLabel = profile.label.trim().ifEmpty { "Adult Baseline" }.take(80)
             val safeAge = profile.ageYears.coerceIn(1L, 120L)
             val safeSex = BiologicalSex.fromRaw(profile.biologicalSex).name
@@ -150,7 +165,12 @@ class ClinicalRecordsRepository(
             }.toString()
             cryptoManager.writeEncryptedCache("profile_latest.enc", jsonPayload)
 
-            val colRef = db.collection("users").document(uid).collection("profiles")
+            val firestore = db ?: return Result.failure(
+                IllegalStateException("Saved to encrypted local device vault (cloud sync inactive).")
+            )
+            val uid = requireUserId()
+            check(uid == userId) { "Signed-in user mismatch" }
+            val colRef = firestore.collection("users").document(uid).collection("profiles")
             val isUpdate = profile.id.isNotBlank() && Regex("^[a-zA-Z0-9_\\-]+$").matches(profile.id)
             if (isUpdate) {
                 val docRef = colRef.document(profile.id)
@@ -190,7 +210,7 @@ class ClinicalRecordsRepository(
                 ).await()
             }
 
-            logAuditEventInternal(uid, "PROFILE_SAVED", "Encrypted baseline profile saved ($cleanLabel)")
+            logAuditEventInternal(firestore, uid, "PROFILE_SAVED", "Encrypted baseline profile saved ($cleanLabel)")
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -203,9 +223,6 @@ class ClinicalRecordsRepository(
     suspend fun saveSimulationSnapshot(userId: String, state: PhysiologyState): Result<Unit> {
         var docPath = "users/$userId/records"
         return try {
-            val uid = requireUserId()
-            check(uid == userId) { "Signed-in user mismatch" }
-
             val cleanLabel = state.profile.label.trim().ifEmpty { "Adult Baseline" }.take(80)
             val cleanStimulus = state.stimulusSummary.trim().ifEmpty { "Baseline" }.take(200)
 
@@ -225,7 +242,13 @@ class ClinicalRecordsRepository(
             }.toString()
             val digest = cryptoManager.writeEncryptedCache("snapshot_latest.enc", vaultJson)
 
-            val docRef = db.collection("users").document(uid).collection("records").document()
+            val firestore = db ?: return Result.failure(
+                IllegalStateException("Saved to encrypted local device vault (cloud sync inactive).")
+            )
+            val uid = requireUserId()
+            check(uid == userId) { "Signed-in user mismatch" }
+
+            val docRef = firestore.collection("users").document(uid).collection("records").document()
             docPath = docRef.path
             docRef.set(
                 mapOf(
@@ -250,7 +273,7 @@ class ClinicalRecordsRepository(
                 )
             ).await()
 
-            logAuditEventInternal(uid, "RECORD_SYNCED", "Telemetry snapshot synced (SHA-256 ${digest.take(12)})")
+            logAuditEventInternal(firestore, uid, "RECORD_SYNCED", "Telemetry snapshot synced (SHA-256 ${digest.take(12)})")
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -263,10 +286,13 @@ class ClinicalRecordsRepository(
     suspend fun deleteRecord(userId: String, recordId: String): Result<Unit> {
         val docPath = "users/$userId/records/$recordId"
         return try {
+            val firestore = db ?: return Result.failure(
+                IllegalStateException("Cloud sync inactive.")
+            )
             val uid = requireUserId()
             check(uid == userId) { "Signed-in user mismatch" }
             require(recordId.isNotBlank()) { "Record ID required" }
-            db.document(docPath).delete().await()
+            firestore.document(docPath).delete().await()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -278,9 +304,10 @@ class ClinicalRecordsRepository(
 
     suspend fun logAuditEvent(userId: String, action: String, detail: String): Result<Unit> {
         return try {
+            val firestore = db ?: return Result.success(Unit)
             val uid = requireUserId()
             check(uid == userId) { "Signed-in user mismatch" }
-            logAuditEventInternal(uid, action, detail)
+            logAuditEventInternal(firestore, uid, action, detail)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -290,11 +317,16 @@ class ClinicalRecordsRepository(
         }
     }
 
-    private suspend fun logAuditEventInternal(uid: String, action: String, detail: String) {
+    private suspend fun logAuditEventInternal(
+        firestore: FirebaseFirestore,
+        uid: String,
+        action: String,
+        detail: String,
+    ) {
         val allowed = setOf("PROFILE_SAVED", "RECORD_SYNCED", "PDF_EXPORTED", "DATA_CLEARED")
         val safeAction = if (action in allowed) action else "RECORD_SYNCED"
         val safeDetail = detail.trim().ifEmpty { "Clinical action recorded" }.take(200)
-        val docRef = db.collection("users").document(uid).collection("auditLogs").document()
+        val docRef = firestore.collection("users").document(uid).collection("auditLogs").document()
         docRef.set(
             mapOf(
                 "userId" to uid,
